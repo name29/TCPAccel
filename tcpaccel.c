@@ -107,6 +107,10 @@ struct packet_type {
 	return 0;
 }
 
+static void testSend_skb_destruct(struct sk_buff* skb)
+{
+}
+
 static void __exit cleanup_main(void)
 {
 /*
@@ -130,6 +134,7 @@ int new_hook_func(struct sk_buff * skb ,struct net_device * dv ,struct packet_ty
     	struct sk_buff *newskb;
     	struct iphdr *newip;
     	struct tcphdr *newtcp;
+       	struct ethhdr *neweth;
 	int newlen;
 	int newsend;
 	struct net_device* exit_dev;
@@ -172,7 +177,7 @@ int new_hook_func(struct sk_buff * skb ,struct net_device * dv ,struct packet_ty
 				tcp = (struct tcphdr *) skb_transport_header(my_skb);
 
 				newlen = ETH_FRAME_LEN + sizeof(struct iphdr) + sizeof(struct tcphdr) + 0x00;
-				newskb = alloc_skb(newlen, GFP_KERNEL);
+				newskb = alloc_skb(newlen, GFP_ATOMIC);
 
     				if (skb_linearize(newskb) < 0)
 				{
@@ -181,7 +186,6 @@ int new_hook_func(struct sk_buff * skb ,struct net_device * dv ,struct packet_ty
 				}
 
     				skb_reserve(newskb, newlen);
-
 
 				newskb->csum = 0;
 
@@ -273,8 +277,23 @@ int new_hook_func(struct sk_buff * skb ,struct net_device * dv ,struct packet_ty
     					newip->daddr    = ip->saddr; //SWAP
 
 					ip_send_check(newip);
-					dev_hard_header(newskb, exit_dev, ETH_P_IP, eth->h_dest, eth->h_source, exit_dev->addr_len);
 
+
+					skb_push(newskb,sizeof(struct ethhdr));
+					skb_reset_mac_header(newskb);
+					skb_reset_mac_len(newskb);
+
+					newskb->dev = exit_dev;
+					neweth = eth_hdr(newskb);
+					newskb->protocol =  neweth->h_proto = htons(ETH_P_IP);
+					memcpy (neweth->h_source,eth->h_dest, ETH_ALEN);
+					memcpy (neweth->h_dest, eth->h_source, ETH_ALEN);
+
+					skb->destructor = testSend_skb_destruct;
+					skb_shinfo(skb)->destructor_arg = NULL;
+//					dev_hard_header(newskb, exit_dev, ETH_P_IP, eth->h_dest, eth->h_source, exit_dev->addr_len);
+
+					skb_get(newskb);
 			        	ret = dev_queue_xmit(newskb);
 					printk(KERN_ALERT "dev_queue_xmit (fake ACK) returned %d\n", ret);
 				}
