@@ -1,96 +1,210 @@
 /* Kernel Programming */
-#include <linux/ip.h>
-#include <net/ip.h>
-#include <linux/netdevice.h>
-#include <linux/skbuff.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/ip.h>
+#include <linux/netdevice.h>
+#include <linux/skbuff.h>
 #include <linux/tcp.h>
-
+#include <linux/string.h>
+#include <linux/fs.h>
+#include <linux/mutex.h>
+#include <linux/errno.h>
+#include <linux/err.h>
+#include <linux/cdev.h>
+#include <net/ip.h>
+#include <asm/uaccess.h>
+#include <asm/bitops.h>
 MODULE_AUTHOR("Emanuele Fia");
 MODULE_DESCRIPTION("TCP ACCELLERATOR");
-MODULE_LICENSE("BHO 2.0");
+MODULE_LICENSE("BHO.0");
 MODULE_VERSION("0.0.1");
 
-/*
-#include <linux/module.h>  // Needed by all modules 
-#include <linux/kernel.h>  // Needed for KERN_ALERT
-#include <linux/init.h>     // Needed for the macros
-#include <linux/skbuff.h>
-#include <linux/if_ether.h>
-#include <linux/netdevice.h>
-#include <asm-generic/types.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_defs.h>
-#include <linux/netfilter_ipv4.h>
-#include <linux/netfilter_bridge.h>
-#include <linux/ip.h>
 
-*/
+#define BUFFER_MAX_PACKET_SIZE 1500;
 
 /*
-static struct nf_hook_ops nfin;
-
-static unsigned int hook_func_in(unsigned int hooknum,
-            struct sk_buff *skb,
-                            const struct net_device *in,
-                            const struct net_device *out,
-                            int (*okfn)(struct sk_buff *))
-{
-    struct ethhdr *eth;
-    struct iphdr *ip_header;
-
-    struct tcphdr *tcp;
-
-    eth = (struct ethhdr*)skb_mac_header(skb);
-    ip_header = (struct iphdr *)skb_network_header(skb);
-
-    if (ip_header->protocol != 6)
-	return NF_ACCEPT;
-
-    tcp = (struct tcphdr*)((__u32 *)ip_header+ip_header->ihl);
-
-    printk("src mac %pM, dst mac %pM\n", eth->h_source, eth->h_dest);
-    printk("src IP addr:=%pi4\n", ip_header->saddr);
-    return NF_ACCEPT;
+struct ethhdr {
+         unsigned char   h_dest[ETH_ALEN];       // destination eth addr
+         unsigned char   h_source[ETH_ALEN];     // source ether addr
+        __be16          h_proto;                // packet type ID field
 }
+
+struct iphdr {
+ #if defined(__LITTLE_ENDIAN_BITFIELD)
+         __u8    ihl:4,
+                 version:4;
+ #elif defined (__BIG_ENDIAN_BITFIELD)
+         __u8    version:4,
+                  ihl:4;
+  #else
+  #error  "Please fix <asm/byteorder.h>"
+  #endif
+          __u8    tos;
+          __be16  tot_len;
+          __be16  id;
+         __be16  frag_off;
+         __u8    ttl;
+         __u8    protocol;
+         __sum16 check;
+         __be32  saddr;
+         __be32  daddr;
+         //The options start here.
+};
+
+
+ struct tcphdr {
+         __be16  source;
+         __be16  dest;
+         __be32  seq;
+         __be32  ack_seq;
+ #if defined(__LITTLE_ENDIAN_BITFIELD)
+         __u16   res1:4,
+                 doff:4,
+                 fin:1,
+                 syn:1,
+                 rst:1,
+                 psh:1,
+                 ack:1,
+                 urg:1,
+                 ece:1,
+                 cwr:1;
+ #elif defined(__BIG_ENDIAN_BITFIELD)
+         __u16   doff:4,
+                 res1:4,
+                 cwr:1,
+                 ece:1,
+                 urg:1,
+                 ack:1,
+                 psh:1,
+                 rst:1,
+                 syn:1,
+                 fin:1;
+ #else
+ #error  "Adjust your <asm/byteorder.h> defines"
+ #endif
+         __be16  window;
+         __sum16 check;
+         __be16  urg_ptr;
+ };
 */
 
-//int new_hook_func(struct sk_buff *skb, struct device *dv, struct packet_type *pt);
+/*
+static unsigned int cfake_major = 0;
+static struct class *cfake_class = NULL;
+static struct cdev cdev;
+*/
+
+
+static volatile long unsigned int  atom_open_counter;
+
+static struct packet_buffer {
+	size_t size;
+	size_t used;
+	struct mutex mutex;
+	char* data;
+
+	char* start;
+	char* end;
+} pb;
+
+
+int pb_init(struct packet_buffer *pb);
+int pb_allocate(struct packet_buffer *pb);
+int pb_deallocate(struct packet_buffer *pb);
+int pb_write(struct packet_buffer *pb ,
+				void *  data1, size_t len1,
+				void *  data2, size_t len2,
+				void *  data3, size_t len3,
+				void *  data4, size_t len4 );
+ssize_t pb_read_user(struct packet_buffer * pb,char* buff_userspace,size_t len);
+
+
+//prototypes, else the structure initialization tat follows fail
+static int dev_virtual_open(struct inode *n, struct file *fil);
+static int dev_virtual_rls(struct inode *n,struct file *fil);
+static ssize_t dev_virtual_read(struct file *fil, char *c, size_t len, loff_t * off);
+static ssize_t dev_virtual_write(struct file *fil, const char *c, size_t len, loff_t * off);
+
+// structure containing callbacks
+static struct file_operations fops=
+{
+    .read=dev_virtual_read, //address of dev_read
+    .open=dev_virtual_open,
+    .write=dev_virtual_write,
+    .release=dev_virtual_rls,
+};
+
+
 int new_hook_func(struct sk_buff * skb ,struct net_device * dev ,struct packet_type * pt,struct net_device * orig_dev);
 
 static struct packet_type pkt_lan;
 static struct packet_type pkt_wan;
 
-char * dev_name_lan = "eth1";
-char * dev_name_wan = "eth2";
-struct net_device *dev_lan;
-struct net_device *dev_wan;
+static char * dev_name_lan = "eth1";
+static char * dev_name_wan = "eth2";
+static struct net_device *dev_lan;
+static struct net_device *dev_wan;
 
+#define CFAKE_DEVICE_NAME "myDev"
 
 static int __init init_main(void)
 {
+	int ret;
 /*
-    nfin.hook     = hook_func_in;
-    nfin.hooknum  = NF_INET_PRE_ROUTING;
-    nfin.pf       = PF_INET;
-    nfin.priority = NF_IP_PRI_FIRST;
-    nf_register_hook(&nfin);
+	int err = 0;
+	int minor;
+	dev_t devno;
+	struct device * device;
+	dev_t dev = 0;
+
+	err = alloc_chrdev_region(&dev, 0, 1, CFAKE_DEVICE_NAME);
+	if (err < 0) {
+		printk(KERN_WARNING "[target] alloc_chrdev_region() failed\n");
+		return err;
+	}
+
+	cfake_major = MAJOR(dev);
+
+	cfake_class = class_create(THIS_MODULE, CFAKE_DEVICE_NAME);
+	if (IS_ERR(cfake_class)) {
+		err = PTR_ERR(cfake_class);
+//		goto fail;
+	}
+
+	minor = 0;
+
+	devno = MKDEV(cfake_major, minor);
+	device = NULL;
+
+	BUG_ON(cfake_class == NULL);
+
+	cdev_init(&cdev, &fops);
+	cdev.owner = THIS_MODULE;
+	err = cdev_add(&cdev, devno, 1);
+	if (err)
+	{
+		printk(KERN_WARNING "[target] Error %d while trying to add %s%d",
+			err, CFAKE_DEVICE_NAME, minor);
+		return err;
+	}
+
+	device = device_create(cfake_class, NULL, // no parent device 
+		devno, NULL, // no additional data 
+		CFAKE_DEVICE_NAME "%d", minor);
+
+	if (IS_ERR(device)) {
+		err = PTR_ERR(device);
+		printk(KERN_WARNING "[target] Error %d while trying to create %s%d",
+			err, CFAKE_DEVICE_NAME, minor);
+		cdev_del(&cdev);
+		return err;
+	}
 */
-/*
-struct packet_type {
-        __be16                  type;   // This is really htons(ether_type). 
-        struct net_device       *dev;   // NULL is wildcarded here          
-        int                     (*func) (struct sk_buff *,
-                                         struct net_device *,
-                                         struct packet_type *,
-                                         struct net_device *);
-        bool                    (*id_match)(struct packet_type *ptype,
-                                            struct sock *sk);
-        void                    *af_packet_priv;
-        struct list_head        list;
-}
-*/
+
+	set_bit(0,&atom_open_counter);
+
+	pb_init(&pb);
+
 	dev_lan = dev_get_by_name(&init_net, dev_name_lan);
 	pkt_lan.type = htons(ETH_P_ALL);
 	pkt_lan.func = new_hook_func;
@@ -103,21 +217,40 @@ struct packet_type {
 	pkt_wan.dev = dev_wan;
 	dev_add_pack(&pkt_wan);
 
+	ret = register_chrdev(89,"myDev",&fops); //register with major number
+
+	if(ret<0)
+	{
+		printk(KERN_ALERT "Device registration failed.. \n");
+	}
+    	else
+	{
+		printk(KERN_ALERT "device registered \n");
+	}
+
 	printk( KERN_ALERT "TCPAccel successfull loaded! Thank you GOD!\n");
 	return 0;
-}
-
-static void testSend_skb_destruct(struct sk_buff* skb)
-{
 }
 
 static void __exit cleanup_main(void)
 {
 /*
-    nf_unregister_hook(&nfin);
-*/
+	int minor;
+	minor = 0;
+
+
        	dev_remove_pack(&pkt_lan);
        	dev_remove_pack(&pkt_wan);
+
+	device_destroy(cfake_class, MKDEV(cfake_major, minor));
+
+	if (cfake_class)
+		class_destroy(cfake_class);
+
+	unregister_chrdev_region(MKDEV(cfake_major, 0),0);
+*/
+	unregister_chrdev(89,"myDev");
+
 	printk(KERN_ALERT "module exit");
 }
 
@@ -125,189 +258,290 @@ module_init(init_main);
 module_exit(cleanup_main);
 
 int new_hook_func(struct sk_buff * skb ,struct net_device * dv ,struct packet_type * pt,struct net_device * dv2)
-//int new_hook_func(struct sk_buff *skb, struct device *dv, struct packet_type *pt)
 {
 	struct iphdr *ip;
        	struct ethhdr *eth;
        	struct tcphdr *tcp;
 
-    	struct sk_buff *newskb;
-    	struct iphdr *newip;
-    	struct tcphdr *newtcp;
-       	struct ethhdr *neweth;
-	int newlen;
-	int newsend;
-	struct net_device* exit_dev;
-	int tmp;
 	int ret;
+	int show_warning;
 
-	newsend=0;
+	show_warning=0;
+
 	eth  = eth_hdr(skb);
 	if(skb->pkt_type != PACKET_OUTGOING)
 	{
-        	struct sk_buff *my_skb = 0;
-
-        	//copy incoming skb
+		//out packet
+		struct sk_buff *my_skb = 0;
 	        my_skb = skb_copy_expand(skb, 16, 16, GFP_ATOMIC);
-
-        	//push ethernet layer to skb
         	skb_push(my_skb, ETH_HLEN);
-
         	my_skb->pkt_type = PACKET_OUTGOING;
 
-//		printk( KERN_ALERT "TCPAccel new packet received from %pM to %pM (proto %hu)!\n",&(eth->h_source),&(eth->h_dest),ntohs(eth->h_proto));
-
-		if ( dv == dev_wan )
-		{
-			my_skb->dev = dev_lan;
-		}
-		else if ( dv == dev_lan )
-		{
-			my_skb->dev = dev_wan;
-		}
+		if ( dv == dev_wan ) my_skb->dev = dev_lan;
+		else if ( dv == dev_lan ) my_skb->dev = dev_wan;
 
 		if ( ntohs(eth->h_proto) == 2048 )
 		{
-			ip = (struct iphdr*)skb_network_header(my_skb);
-			tmp = ip->protocol;
-//			printk( KERN_ALERT "TCPAccel new packet received from %pI4 to %pI4 (proto %d)!\n",&(ip->saddr),&(ip->daddr),tmp);
+			ip = (struct iphdr*)skb_network_header(skb);
 
 			if(ip->version == 4 && ip->protocol == IPPROTO_TCP)
 			{
-				tcp = (struct tcphdr *) skb_transport_header(my_skb);
+				tcp = (struct tcphdr *) skb_transport_header(skb);
 
-				newlen = ETH_FRAME_LEN + sizeof(struct iphdr) + sizeof(struct tcphdr) + 0x00;
-				newskb = alloc_skb(newlen, GFP_ATOMIC);
-
-    				if (skb_linearize(newskb) < 0)
+				if ( test_bit(1,&atom_open_counter) == 1 )
 				{
-					printk( KERN_ALERT "TCPAccel linearize error =(\n");
-					return NF_DROP;
+					size_t eth_s = sizeof(struct ethhdr);
+					size_t ip_s = ip->ihl*4;
+					size_t tcp_s = tcp->doff*4;
+					size_t payload_s = (size_t) (skb->data-skb->tail);
+
+					if ( pb_write(&pb,
+							eth,eth_s,
+							ip,ip_s,
+							tcp,tcp_s,
+							skb->data,payload_s))
+					{
+						printk(KERN_ALERT "Unable to save packet! BUFFER FULL! This packet is lost! (consider adjust buffer size)\n");
+					}
 				}
 
-    				skb_reserve(newskb, newlen);
-
-				newskb->csum = 0;
-
-				skb_push(newskb, sizeof(struct tcphdr));
-				skb_reset_transport_header(newskb);
-
-				newtcp = (struct tcphdr *) skb_transport_header(newskb);
-				//newtcp = (void *)skb_put(newskb, sizeof(struct tcphdr));
-				//skb_put re-sets the tail for udphdr
-				newtcp->source = tcp->dest;
-				newtcp->dest   = tcp->source;
-				newtcp->check = 0;
-
-				if ( dv == dev_wan )
-				{
-					if ( tcp->syn && ! tcp->ack )
-					{
-					}
-					else if ( tcp->syn && tcp->ack )
-					{
-
-					}
-					else if ( tcp->ack )
-					{
-						printk(KERN_ALERT "it's my time!!!\n");
-						//Ignore flag e ignore window
-						newtcp->seq = 0;
-						newtcp->ack_seq = tcp->seq + 1;
-						newtcp->res1 = 0;
-						newtcp->doff = 0;
-						newtcp->fin = 0;
-						newtcp->syn = 0;
-						newtcp->rst = 0;
-						newtcp->psh = 0;
-						newtcp->ack = 1;
-						newtcp->urg = 0;
-						newtcp->ece = 0;
-						newtcp->cwr = 0;
-						newtcp->window = 0;
-						newtcp->check = 0;
-						newtcp->urg_ptr = 0;
-
-						newsend=1;
-						exit_dev=dev_lan;
-					}
-					//Gestisco ack se presente
-					//Se ci sono altri dati gli invio al destinatario
-				}
-				else if ( dv == dev_lan )
-				{
-					if ( tcp->syn && ! tcp->ack )
-					{
-
-					}
-					else if ( tcp->syn && tcp->ack )
-					{
-
-					}
-
-					//Gestisco tutto
-				}
-				if (newsend)
-				{
-					newskb->csum = csum_partial ((char*) newtcp, sizeof(struct udphdr),newskb->csum);
-					newtcp->check = csum_tcpudp_magic(newtcp->source,newtcp->dest,0,IPPROTO_TCP,newskb->csum);
-
-					if (newtcp->check == 0)
-					{
-						printk(KERN_ALERT "check 0!!!!!\n");
-					}
-
-					skb_push(newskb,sizeof(struct iphdr));
-					skb_reset_network_header(newskb);
-					newip = (struct iphdr*)skb_network_header(newskb);
-
-    					//newip = (void *)skb_put(newskb, sizeof(struct iphdr*));
-    					//skb_put sets the tail for iphdr
-    					newip->version  = IPVERSION;
-    					newip->ihl      = sizeof(struct iphdr) / 4;
-    					newip->tos      = 0;
-					newip->tot_len  = htons(newskb->len);
-    					newip->id       = 0;
-    					newip->frag_off = 0;
-	//    				newip->frag_off = htons(IP_DF);
-					newip->ttl	= 255;
-    					newip->protocol = IPPROTO_TCP;
-    					newip->check    = 0;
-    					newip->saddr    = ip->daddr; //SWAP
-    					newip->daddr    = ip->saddr; //SWAP
-
-					ip_send_check(newip);
-
-
-					skb_push(newskb,sizeof(struct ethhdr));
-					skb_reset_mac_header(newskb);
-					skb_reset_mac_len(newskb);
-
-					newskb->dev = exit_dev;
-					neweth = eth_hdr(newskb);
-					newskb->protocol =  neweth->h_proto = htons(ETH_P_IP);
-					memcpy (neweth->h_source,eth->h_dest, ETH_ALEN);
-					memcpy (neweth->h_dest, eth->h_source, ETH_ALEN);
-
-					skb->destructor = testSend_skb_destruct;
-					skb_shinfo(skb)->destructor_arg = NULL;
-//					dev_hard_header(newskb, exit_dev, ETH_P_IP, eth->h_dest, eth->h_source, exit_dev->addr_len);
-
-					skb_get(newskb);
-			        	ret = dev_queue_xmit(newskb);
-					printk(KERN_ALERT "dev_queue_xmit (fake ACK) returned %d\n", ret);
-				}
-    				kfree_skb(newskb);
+				goto tcpaccel_free;
 			}
 		}
+
         	ret = dev_queue_xmit(my_skb);
-//		printk(KERN_ALERT "dev_queue_xmit returned %d\n", ret);
 
-	        //drop all incoming packets
-		//kfree_skb(my_skb);
-		//kfree_skb(skb);
-
+tcpaccel_free:
+		kfree_skb(my_skb);
 	}
+	kfree_skb(skb);
 	return NET_RX_DROP;
 }
 
+//called when "open" system call is done on the device file
+static int dev_virtual_open(struct inode *inod, struct file *fil)
+{
+	if ( test_and_set_bit(1, &atom_open_counter) != 0 )
+	{
+		printk(KERN_ALERT "EBBChar: Device in use by another process");
+      		return -EBUSY;
+	}
+
+	if ( pb_allocate(&pb) != 0 )
+	{
+		printk(KERN_ALERT "Unable to allocate space for internal buffer inside the Kernel! =(\n");
+
+		set_bit(0,&atom_open_counter);
+
+		return -EBUSY;
+	}
+
+	printk(KERN_ALERT "Someone open the devfile =) \n");
+
+	return 0;
+}
+
+// called when 'read' system call
+static ssize_t dev_virtual_read(struct file *fil, char *buff_userspace, size_t len, loff_t * off)
+{
+	return pb_read_user(&pb,buff_userspace,len);
+}
+
+//called when 'write' is called on device file
+static ssize_t dev_virtual_write(struct file *fil, const char *buff, size_t len, loff_t * off)
+{
+	return -1;
+}
+
+//called when 'close' system call
+static int dev_virtual_rls(struct inode *inod, struct file *fil)
+{
+	set_bit(0,&atom_open_counter);
+
+	return 0;
+}
+
+
+
+int pb_deallocate(struct packet_buffer *pb)
+{
+	mutex_lock(&(pb->mutex));
+
+	kfree(pb->data);
+
+	pb->size=0;
+	pb->used=0;
+	pb->data=NULL;
+	pb->start=NULL;
+	pb->end=NULL;
+
+	mutex_unlock(&(pb->mutex));
+
+	return 0;
+}
+
+int pb_allocate(struct packet_buffer *pb)
+{
+	mutex_lock(&(pb->mutex));
+
+	pb->used = 0;
+	pb->size = 0;
+	pb->size += 18; //Max Ethernet 	HEADER
+	pb->size += 60; //Max IP  	HEADER
+	pb->size += 60; //Max TCP		HEADER
+	pb->size += 1470; //Max Payload (MTU 1500)
+
+	pb->size *= BUFFER_MAX_PACKET_SIZE;
+
+	pb->start = pb->end = pb->data = kmalloc( pb->size , GFP_KERNEL);
+
+	if ( pb->data == NULL )
+	{
+		pb->used = 0;
+		pb->size = 0;
+
+		mutex_unlock(&(pb->mutex));
+
+		return -1;
+	}
+
+	mutex_unlock(&(pb->mutex));
+
+	return 0;
+}
+
+int pb_init(struct packet_buffer *pb)
+{
+	pb->used = 0;
+	pb->size = 0;
+	pb->start = 0;
+	pb->end = 0;
+	pb->data = NULL;
+
+	mutex_init(&(pb->mutex));
+
+	return 0;
+}
+
+int pb_write_internal(struct packet_buffer *pb ,
+				void *  data, size_t len)
+{
+	size_t actual_offset;
+	size_t avail;
+
+	//Ok there are space inside the circular buffer
+
+	actual_offset = pb->end - pb->data;
+
+	if ( pb->size - actual_offset > len )
+	{
+		//rewind not needed
+		memcpy(pb->end,data,len);
+
+		pb->end += len;
+		pb->used += len;
+	}
+	else
+	{
+		//Oh no! rewind needed
+		avail = (pb->size - actual_offset);
+		memcpy(pb->end,data,avail);
+
+		pb->end = pb->data; //rewind
+
+		memcpy(pb->end,data+avail,len-avail);
+
+		pb->end += avail;
+		pb->used += len;
+	}
+
+	return 0;
+}
+
+int pb_write(struct packet_buffer *pb ,
+				void *  data1, size_t len1,
+				void *  data2, size_t len2,
+				void *  data3, size_t len3,
+				void *  data4, size_t len4 )
+{
+	int ret;
+	int len;
+
+	len= len1 + len2 + len3 + len4;
+	ret = 0;
+
+	mutex_lock(&(pb->mutex));
+	if ( len <= pb->size - pb->used )
+	{
+		//Ok there are space inside the circular buffer
+		pb_write_internal(pb,data1,len1);
+		pb_write_internal(pb,data2,len2);
+		pb_write_internal(pb,data3,len3);
+		pb_write_internal(pb,data4,len4);
+	}
+	else
+	{
+		ret=1;
+	}
+
+	mutex_unlock(&(pb->mutex));
+
+	return ret;
+}
+
+
+ssize_t pb_read_user(struct packet_buffer * pb,char* buff_userspace,size_t len)
+{
+	int to_read;
+	int not_writed;
+	int avail;
+	size_t actual_offset;
+
+	mutex_lock(&(pb->mutex));
+
+	to_read = 0;
+	if ( pb->used > 0 )
+	{
+
+		if ( pb->used < len ) to_read = pb->used;
+		else to_read = len;
+
+		actual_offset = pb->start - pb->data;
+
+		if ( pb->size - actual_offset > to_read )
+		{
+			//rewind not needed
+			not_writed = copy_to_user(buff_userspace,pb->start,to_read);
+
+			pb->start += (to_read - not_writed);
+			pb->used -= (to_read - not_writed);
+		}
+		else
+		{
+			//Oh no! rewind needed
+			avail = (pb->size - actual_offset);
+			not_writed  = copy_to_user(buff_userspace,pb->start,avail);
+
+			pb->used -= (avail - not_writed);
+
+			if ( not_writed == 0 )
+			{
+				pb->start = pb->data; //rewind
+
+				not_writed = copy_to_user(buff_userspace,pb->start,to_read-avail);
+
+				pb->start += (to_read - avail - not_writed);
+				pb->used  -= (to_read - avail - not_writed);
+			}
+			else
+			{
+				pb->start -= (avail  - not_writed);
+
+				not_writed += (to_read-avail);
+			}
+		}
+	}
+	mutex_unlock(&(pb->mutex));
+
+	return (to_read - not_writed);
+}
